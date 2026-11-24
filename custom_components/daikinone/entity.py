@@ -1,13 +1,14 @@
+import asyncio
 import logging
-import backoff
-from typing import Callable, Awaitable
+from collections.abc import Awaitable, Callable
 
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import Entity
 
 from custom_components.daikinone import DaikinOneData
-from custom_components.daikinone.const import DOMAIN, MANUFACTURER
 from custom_components.daikinone.client.models import DaikinDevice, DaikinEquipment, DaikinThermostat
+from custom_components.daikinone.const import DOMAIN, MANUFACTURER
+from custom_components.daikinone.exceptions import DaikinAuthError, DaikinServiceException
 
 log = logging.getLogger(__name__)
 
@@ -75,7 +76,16 @@ class DaikinOneEntity[D: DaikinDevice](Entity):
             return
 
         log.debug("Updating daikinone entity %s for device %s", self.unique_id, self._device.id)
-        await self._data.update(no_throttle=no_throttle)
+        try:
+            await self._data.update(no_throttle=no_throttle)
+        except DaikinAuthError:
+            self._data.entry.async_start_reauth(self.hass)
+            self._attr_available = False
+            return
+        except DaikinServiceException as err:
+            log.debug("Daikin refresh failed: %s", err)
+            self._attr_available = False
+            return
         try:
             self._device = await self.async_get_device()
         except KeyError:
@@ -86,7 +96,10 @@ class DaikinOneEntity[D: DaikinDevice](Entity):
             self._attr_available = False
             return
 
-        self._attr_available = True
+        if isinstance(self._device, DaikinThermostat):
+            self._attr_available = self._device.online
+        elif isinstance(self._device, DaikinEquipment):
+            self._attr_available = self._data.daikin.get_thermostat(self._device.thermostat_id).online
         self.update_entity_attributes()
 
     async def update_state_optimistically(
@@ -100,44 +113,29 @@ class DaikinOneEntity[D: DaikinDevice](Entity):
         scheduled updates are paused while waiting to avoid overwriting the optimistic update with stale data. A full
         entity update is scheduled at the end regardless of whether updated remote state was found or not.
         """
-        # pause entity updates
-        self._updates_paused = True
+        thermostat_id = self._device.thermostat_id if isinstance(self._device, DaikinEquipment) else self._device.id
+        async with self._data.write_lock(thermostat_id):
+            self._updates_paused = True
+            try:
+                await operation()
+                optimistic_update(self._device)
+                self.update_entity_attributes()
+                self.async_write_ha_state()
+                try:
+                    async with asyncio.timeout(10):
+                        await self._wait_for_updated_value(check)
+                except TimeoutError:
+                    log.debug("Timed out waiting for thermostat state confirmation")
+            finally:
+                self._updates_paused = False
 
-        # execute change operation
-        await operation()
+            await self.async_update(no_throttle=True)
+            self.async_write_ha_state()
 
-        # execute state update optimistically
-        optimistic_update(self._device)
-        self.update_entity_attributes()
-        self.async_write_ha_state()
-
-        # wait for remote state to be updated
-        await self._wait_for_updated_value(check)
-
-        # resume entity updates
-        self._updates_paused = False
-
-        # full entity update to make sure everything is in sync
-        await self.async_update(no_throttle=True)
-        self.async_write_ha_state()
-
-    @backoff.on_predicate(
-        backoff.constant,
-        max_time=10,
-        on_success=lambda _: log.debug("Finished waiting for updated value"),
-        on_giveup=lambda _: log.debug("Gave up waiting for updated value"),
-        logger=log.getChild("backoff"),
-        backoff_log_level=logging.DEBUG,
-        giveup_log_level=logging.DEBUG,
-    )
-    async def _wait_for_updated_value(self, check: Callable[[D], bool]) -> bool:
-        """
-        Waits for an updated value from the API. Continually retries until the check passes or max_time has been
-        reached.
-        """
-
-        # fetch the latest from the api
-        await self._data.update(no_throttle=True)
-
-        # check if the value has been updated to the expected value
-        return check(await self.async_get_device())
+    async def _wait_for_updated_value(self, check: Callable[[D], bool]) -> None:
+        """Poll until the cloud confirms the write or the caller's deadline expires."""
+        while True:
+            await self._data.update(no_throttle=True)
+            if check(await self.async_get_device()):
+                return
+            await asyncio.sleep(1)

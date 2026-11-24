@@ -8,10 +8,22 @@
           "email": "Email",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Sign in to Daikin One again",
+        "description": "Enter your current Daikin One account password.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
-      "auth_failed": "Authentication failed, please check your credentials and try again. Check the logs for more info."
+      "auth_failed": "Daikin rejected the account credentials.",
+      "cannot_connect": "Could not connect to the Daikin service."
+    },
+    "abort": {
+      "already_configured": "This Daikin account is already configured.",
+      "reauth_successful": "Daikin account credentials updated."
     }
   },
   "entity": {

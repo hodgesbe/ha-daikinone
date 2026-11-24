@@ -70,31 +70,37 @@ def map_thermostat(payload: DaikinDeviceDataResponse) -> DaikinThermostat:
 def map_air_quality_outdoor(
     payload: DaikinDeviceDataResponse,
 ) -> DaikinOneAirQualitySensorOutdoor | None:
-    if not payload.data["aqOutdoorAvailable"]:
+    if not payload.data.get("aqOutdoorAvailable"):
         return None
 
-    return DaikinOneAirQualitySensorOutdoor(
-        aqi=payload.data["aqOutdoorValue"],
-        aqi_summary_level=payload.data["aqOutdoorLevel"],
-        particles_microgram_m3=payload.data["aqOutdoorParticles"],
-        ozone_microgram_m3=payload.data["aqOutdoorOzone"],
-    )
+    try:
+        return DaikinOneAirQualitySensorOutdoor(
+            aqi=payload.data["aqOutdoorValue"],
+            aqi_summary_level=payload.data["aqOutdoorLevel"],
+            particles_microgram_m3=payload.data["aqOutdoorParticles"],
+            ozone_microgram_m3=payload.data["aqOutdoorOzone"],
+        )
+    except KeyError, ValueError:
+        return None
 
 
 def map_air_quality_indoor(
     payload: DaikinDeviceDataResponse,
 ) -> DaikinOneAirQualitySensorIndoor | None:
-    if not payload.data["aqIndoorAvailable"]:
+    if not payload.data.get("aqIndoorAvailable"):
         return None
 
-    return DaikinOneAirQualitySensorIndoor(
-        aqi=payload.data["aqIndoorValue"],
-        aqi_summary_level=payload.data["aqIndoorLevel"],
-        particles=payload.data["aqIndoorParticlesValue"],
-        particles_summary_level=payload.data["aqIndoorParticlesLevel"],
-        voc=payload.data["aqIndoorVOCValue"],
-        voc_summary_level=payload.data["aqIndoorVOCLevel"],
-    )
+    try:
+        return DaikinOneAirQualitySensorIndoor(
+            aqi=payload.data["aqIndoorValue"],
+            aqi_summary_level=payload.data["aqIndoorLevel"],
+            particles=payload.data["aqIndoorParticlesValue"],
+            particles_summary_level=payload.data["aqIndoorParticlesLevel"],
+            voc=payload.data["aqIndoorVOCValue"],
+            voc_summary_level=payload.data["aqIndoorVOCLevel"],
+        )
+    except KeyError, ValueError:
+        return None
 
 
 def map_equipment(payload: DaikinDeviceDataResponse) -> dict[str, DaikinEquipment]:

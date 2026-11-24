@@ -4,6 +4,8 @@ import copy
 import logging
 from typing import Any
 
+from aiohttp import ClientSession
+
 from custom_components.daikinone.client.mapping import map_thermostat
 from custom_components.daikinone.client.models import (
     DaikinThermostat,
@@ -17,6 +19,7 @@ from custom_components.daikinone.client.wire import (
     DAIKIN_API_URL_DEVICE_DATA,
     DaikinDeviceDataResponse,
 )
+from custom_components.daikinone.exceptions import DaikinServiceException
 from custom_components.daikinone.utils import Temperature
 
 log = logging.getLogger(__name__)
@@ -25,10 +28,9 @@ log = logging.getLogger(__name__)
 class DaikinOne:
     """Manages connection to Daikin API and fetching device data."""
 
-    __thermostats: dict[str, DaikinThermostat] = dict()
-
-    def __init__(self, creds: DaikinUserCredentials) -> None:
-        self._transport = DaikinTransport(creds)
+    def __init__(self, creds: DaikinUserCredentials, session: ClientSession | None = None) -> None:
+        self.__thermostats: dict[str, DaikinThermostat] = {}
+        self._transport = DaikinTransport(creds, session)
 
     async def login(self) -> bool:
         return await self._transport.login()
@@ -43,15 +45,22 @@ class DaikinOne:
 
     async def update(self) -> None:
         raw = await self._transport.request(DAIKIN_API_URL_DEVICE_DATA)
-        responses = [DaikinDeviceDataResponse(**d) for d in raw]
-
-        for r in responses:
-            if not r.online and len(r.data) == 0:
-                log.warning(f"Skipping offline device with no data: {r.name} ({r.id})")
-                continue
-            self.__thermostats[r.id] = map_thermostat(r)
-
-        log.info(f"Cached {len(self.__thermostats)} thermostats")
+        if not isinstance(raw, list):
+            raise DaikinServiceException("Unexpected thermostat list from Daikin")
+        thermostats: dict[str, DaikinThermostat] = {}
+        skipped = 0
+        for device in raw:
+            try:
+                response = DaikinDeviceDataResponse.model_validate(device)
+                if not response.online and not response.data:
+                    continue
+                thermostats[response.id] = map_thermostat(response)
+            except KeyError, ValueError, TypeError:
+                skipped += 1
+        if skipped:
+            log.warning("Skipped %s unsupported or incomplete Daikin device records", skipped)
+        self.__thermostats = thermostats
+        log.debug("Cached %s online thermostats", len(thermostats))
 
     def get_thermostat(self, thermostat_id: str) -> DaikinThermostat:
         return copy.deepcopy(self.__thermostats[thermostat_id])

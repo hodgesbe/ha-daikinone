@@ -1,32 +1,32 @@
-from enum import Enum
 import logging
+from enum import Enum
 
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityDescription,
 )
 from homeassistant.components.climate.const import (
-    HVACMode,
+    ATTR_TARGET_TEMP_HIGH,
+    ATTR_TARGET_TEMP_LOW,
+    FAN_OFF,
     ClimateEntityFeature,
     HVACAction,
-    ATTR_TARGET_TEMP_LOW,
-    ATTR_TARGET_TEMP_HIGH,
-    FAN_OFF,
+    HVACMode,
 )
-from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfTemperature, ATTR_TEMPERATURE
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from custom_components.daikinone import DaikinOneData, DOMAIN
-from custom_components.daikinone.entity import DaikinOneEntity
+from custom_components.daikinone import DaikinOneConfigEntry, DaikinOneData
 from custom_components.daikinone.client.models import (
     DaikinThermostat,
     DaikinThermostatCapability,
+    DaikinThermostatFanMode,
     DaikinThermostatMode,
     DaikinThermostatStatus,
-    DaikinThermostatFanMode,
 )
+from custom_components.daikinone.entity import DaikinOneEntity
 from custom_components.daikinone.utils import Temperature
 
 log = logging.getLogger(__name__)
@@ -34,11 +34,11 @@ log = logging.getLogger(__name__)
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: DaikinOneConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Daikin One thermostats"""
-    data: DaikinOneData = hass.data[DOMAIN]
+    data: DaikinOneData = config_entry.runtime_data
 
     entities = [
         DaikinOneThermostat(
@@ -72,9 +72,6 @@ class DaikinOneThermostatFanSpeed(Enum):
 class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
     """Thermostat entity for Daikin One"""
 
-    # to be removed in a future version of HA
-    _enable_turn_on_off_backwards_compatibility = False
-
     def __init__(
         self,
         description: ClimateEntityDescription,
@@ -87,7 +84,7 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
 
         self._attr_translation_key = "daikinone_thermostat"
         self._attr_unique_id = f"{self._device.id}-climate"
-        self._attr_temperature_unit = UnitOfTemperature.CELSIUS
+        self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
         self._attr_supported_features = (
             ClimateEntityFeature.TURN_ON
             | ClimateEntityFeature.TURN_OFF
@@ -103,8 +100,8 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
         # TARGET_TEMPERATURE_RANGE and it tries to read them. These attributes are not initialized in
         # `ClimateEntity` like most others, and in a case where the thermostat is not set to auto,
         # they do not get set in async_update either.
-        self._attr_target_temperature_low = None
-        self._attr_target_temperature_high = None
+        self._attr_native_target_temperature_low = None
+        self._attr_native_target_temperature_high = None
 
         # Set up preset modes based on thermostat capabilities. The preset climate feature will only be
         # enabled if at least one preset is detected as supported.
@@ -153,9 +150,6 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
     async def set_thermostat_mode(self, target_mode: DaikinThermostatMode) -> None:
         log.debug("Setting thermostat mode to %s", target_mode)
 
-        # update thermostat mode
-        await self._data.daikin.set_thermostat_mode(self._device.id, target_mode)
-
         # update thermostat mode optimistically
         def update(t: DaikinThermostat):
             t.mode = target_mode
@@ -187,82 +181,59 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
                 raise ValueError(f"Attempted to set unsupported preset mode: {preset_mode}")
 
     async def async_set_temperature(self, **kwargs: float) -> None:
-        """Set new target temperature(s)."""
+        """Set a single setpoint or update the automatic mode range."""
+        heat: Temperature | None = None
+        cool: Temperature | None = None
 
-        temperature = kwargs.get(ATTR_TEMPERATURE)
-        target_temp_low = kwargs.get(ATTR_TARGET_TEMP_LOW)
-        target_temp_high = kwargs.get(ATTR_TARGET_TEMP_HIGH)
+        async def operation() -> None:
+            nonlocal heat, cool
+            try:
+                thermostat = await self.async_get_device()
+            except KeyError:
+                raise ServiceValidationError("Daikin thermostat is unavailable") from None
+            if not thermostat.online:
+                raise ServiceValidationError("Daikin thermostat is offline")
 
-        if target_temp_low or target_temp_high:
-            heat = Temperature.from_celsius(target_temp_low) if target_temp_low is not None else None
-            cool = Temperature.from_celsius(target_temp_high) if target_temp_high is not None else None
+            low = kwargs.get(ATTR_TARGET_TEMP_LOW)
+            high = kwargs.get(ATTR_TARGET_TEMP_HIGH)
+            target = kwargs.get(ATTR_TEMPERATURE)
+            if low is not None or high is not None:
+                heat = Temperature.from_celsius(low) if low is not None else None
+                cool = Temperature.from_celsius(high) if high is not None else None
+                effective_heat = heat if heat is not None else thermostat.set_point_heat
+                effective_cool = cool if cool is not None else thermostat.set_point_cool
+                if (
+                    effective_heat is not None
+                    and effective_cool is not None
+                    and effective_heat.celsius >= effective_cool.celsius
+                ):
+                    raise ServiceValidationError("Heating setpoint must be below the cooling setpoint")
+            elif target is not None:
+                match thermostat.mode:
+                    case DaikinThermostatMode.HEAT | DaikinThermostatMode.AUX_HEAT:
+                        heat = Temperature.from_celsius(target)
+                    case DaikinThermostatMode.COOL:
+                        cool = Temperature.from_celsius(target)
+                    case _:
+                        raise ServiceValidationError("A single setpoint requires heating or cooling mode")
+            else:
+                raise ServiceValidationError("At least one setpoint is required")
 
-            # TODO: take min temp delta into account
-
-            log.debug("Setting thermostat set points: heat=%s and cool=%s", heat, cool)
-
-            # update set points optimistically
-            def update(t: DaikinThermostat):
-                if heat is not None:
-                    t.set_point_heat = heat
-                if cool is not None:
-                    t.set_point_cool = cool
-
-            await self.update_state_optimistically(
-                operation=lambda: self._data.daikin.set_thermostat_home_set_points(
-                    self._device.id,
-                    heat=heat,
-                    cool=cool,
-                    override_schedule=self._device.schedule.enabled,
-                ),
-                optimistic_update=update,
-                check=lambda t: t.set_point_heat == heat and t.set_point_cool == cool,
+            await self._data.daikin.set_thermostat_home_set_points(
+                thermostat.id, heat=heat, cool=cool, override_schedule=thermostat.schedule.enabled
             )
 
-        elif temperature:
-            # setting a single temperature is only valid if the thermostat is in a mode that allows us to infer whether
-            # it is a heat or cool set point
-            temperature = Temperature.from_celsius(temperature)
+        def update(thermostat: DaikinThermostat) -> None:
+            if heat is not None:
+                thermostat.set_point_heat = heat
+            if cool is not None:
+                thermostat.set_point_cool = cool
 
-            match self._device.mode:
-                case DaikinThermostatMode.HEAT | DaikinThermostatMode.AUX_HEAT:
-                    log.debug("Setting thermostat set point: heat=%s ", temperature)
-
-                    # update set points optimistically
-                    def update(t: DaikinThermostat):
-                        t.set_point_heat = temperature
-
-                    await self.update_state_optimistically(
-                        operation=lambda: self._data.daikin.set_thermostat_home_set_points(
-                            self._device.id,
-                            heat=temperature,
-                            override_schedule=self._device.schedule.enabled,
-                        ),
-                        optimistic_update=update,
-                        check=lambda t: t.set_point_heat == temperature,
-                    )
-
-                case DaikinThermostatMode.COOL:
-                    log.debug("Setting thermostat set point: cool=%s ", temperature)
-
-                    # update set points optimistically
-                    def update(t: DaikinThermostat):
-                        t.set_point_cool = temperature
-
-                    await self.update_state_optimistically(
-                        operation=lambda: self._data.daikin.set_thermostat_home_set_points(
-                            self._device.id,
-                            cool=temperature,
-                            override_schedule=self._device.schedule.enabled,
-                        ),
-                        optimistic_update=update,
-                        check=lambda t: t.set_point_cool == temperature,
-                    )
-
-                case _:
-                    raise ValueError("Invalid thermostat mode and set temperature combination")
-        else:
-            raise ValueError("Set temperature called with no temperature values")
+        await self.update_state_optimistically(
+            operation=operation,
+            optimistic_update=update,
+            check=lambda t: (heat is None or t.set_point_heat == heat) and (cool is None or t.set_point_cool == cool),
+        )
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         target_fan_mode: DaikinThermostatFanMode
@@ -291,7 +262,7 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
 
     def update_entity_attributes(self) -> None:
         self._attr_available = self._device.online
-        self._attr_current_temperature = (
+        self._attr_native_current_temperature = (
             self._device.indoor_temperature.celsius if self._device.indoor_temperature else None
         )
         self._attr_current_humidity = self._device.indoor_humidity
@@ -327,24 +298,24 @@ class DaikinOneThermostat(DaikinOneEntity[DaikinThermostat], ClimateEntity):
         # target temperature
 
         # reset target temperature attributes first, single target temp takes precedence and can conflict with range
-        self._attr_target_temperature = None
-        self._attr_target_temperature_low = None
-        self._attr_target_temperature_high = None
+        self._attr_native_target_temperature = None
+        self._attr_native_target_temperature_low = None
+        self._attr_native_target_temperature_high = None
 
         match self._device.mode:
             case DaikinThermostatMode.HEAT | DaikinThermostatMode.AUX_HEAT:
-                self._attr_target_temperature = (
+                self._attr_native_target_temperature = (
                     self._device.set_point_heat.celsius if self._device.set_point_heat else None
                 )
             case DaikinThermostatMode.COOL:
-                self._attr_target_temperature = (
+                self._attr_native_target_temperature = (
                     self._device.set_point_cool.celsius if self._device.set_point_cool else None
                 )
             case DaikinThermostatMode.AUTO:
-                self._attr_target_temperature_low = (
+                self._attr_native_target_temperature_low = (
                     self._device.set_point_heat.celsius if self._device.set_point_heat else None
                 )
-                self._attr_target_temperature_high = (
+                self._attr_native_target_temperature_high = (
                     self._device.set_point_cool.celsius if self._device.set_point_cool else None
                 )
             case _:

@@ -39,7 +39,7 @@ Dashboard source can be found [here](docs/dashboard.yaml) if you'd like you use 
 
 The following is the list of currently confirmed working equipment.
 
-If you have a Daikin One+ system and your equipment is not listed here, please open an issue and we can work on adding support. Your raw Daikin API data can be retrieved by clicking "Download Diagnostics" on a thermostat's device page in Home Assistant. That information will be required to add support for your equipment.
+If you have a Daikin One+ system and your equipment is not listed here, please open an issue and we can work on adding support. You can download a diagnostic summary from the thermostat's device page in Home Assistant. Include your equipment model and describe the missing controls or readings when reporting a problem.
 
 ### Thermostats
 

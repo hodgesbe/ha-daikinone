@@ -1,47 +1,46 @@
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from homeassistant.components.sensor import SensorEntity, SensorEntityDescription
 from homeassistant.components.sensor.const import SensorDeviceClass, SensorStateClass
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
-    EntityCategory,
-    UnitOfTemperature,
     PERCENTAGE,
-    UnitOfPower,
-    UnitOfTime,
-    UnitOfPressure,
+    EntityCategory,
+    UnitOfDensity,
     UnitOfElectricCurrent,
-    CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+    UnitOfPower,
+    UnitOfPressure,
+    UnitOfTemperature,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.typing import StateType
 
-from custom_components.daikinone import DOMAIN, DaikinOneData
-from custom_components.daikinone.const import CONF_OPTION_ENTITY_UID_SCHEMA_VERSION_KEY
-from custom_components.daikinone.entity import DaikinOneEntity
+from custom_components.daikinone import DaikinOneConfigEntry, DaikinOneData
 from custom_components.daikinone.client.models import (
     DaikinDevice,
     DaikinEEVCoil,
-    DaikinOutdoorUnitReversingValveStatus,
-    DaikinOutdoorUnitHeaterStatus,
-    DaikinThermostat,
-    DaikinIndoorUnit,
     DaikinEquipment,
+    DaikinIndoorUnit,
     DaikinOutdoorUnit,
+    DaikinOutdoorUnitHeaterStatus,
+    DaikinOutdoorUnitReversingValveStatus,
+    DaikinThermostat,
 )
+from custom_components.daikinone.const import CONF_OPTION_ENTITY_UID_SCHEMA_VERSION_KEY
+from custom_components.daikinone.entity import DaikinOneEntity
 
 log = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: DaikinOneConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Daikin One sensors"""
-    data: DaikinOneData = hass.data[DOMAIN]
+    data: DaikinOneData = config_entry.runtime_data
     thermostats = data.daikin.get_thermostats().values()
 
     entities: list[SensorEntity] = []
@@ -167,7 +166,7 @@ async def async_setup_entry(
                         state_class=SensorStateClass.MEASUREMENT,
                         # TODO: don't know what measurement this actually is, PM25 is a guess
                         device_class=SensorDeviceClass.PM25,
-                        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+                        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
                         icon="mdi:air-filter",
                     ),
                     data=data,
@@ -183,7 +182,7 @@ async def async_setup_entry(
                         has_entity_name=True,
                         state_class=SensorStateClass.MEASUREMENT,
                         device_class=SensorDeviceClass.OZONE,
-                        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+                        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
                         icon="mdi:air-filter",
                     ),
                     data=data,
@@ -232,7 +231,7 @@ async def async_setup_entry(
                         has_entity_name=True,
                         state_class=SensorStateClass.MEASUREMENT,
                         device_class=SensorDeviceClass.PM25,
-                        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+                        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
                         icon="mdi:air-filter",
                     ),
                     data=data,
@@ -262,7 +261,7 @@ async def async_setup_entry(
                         has_entity_name=True,
                         state_class=SensorStateClass.MEASUREMENT,
                         device_class=SensorDeviceClass.VOLATILE_ORGANIC_COMPOUNDS,
-                        native_unit_of_measurement=CONCENTRATION_MICROGRAMS_PER_CUBIC_METER,
+                        native_unit_of_measurement=UnitOfDensity.MICROGRAMS_PER_CUBIC_METER,
                         icon="mdi:air-filter",
                     ),
                     data=data,
@@ -959,7 +958,7 @@ class DaikinOneEquipmentSensor[E: DaikinEquipment](DaikinOneSensor[E]):
     async def async_get_device(self) -> E:
         thermostat = self._data.daikin.get_thermostat(self._device.thermostat_id)
         # TODO: look at this type issue more later
-        return thermostat.equipment[self._device.id]  # ty: ignore[invalid-return-type]
+        return thermostat.equipment[self._device.id]  # ty: ignore[invalid-explicit-return]
 
     def update_entity_attributes(self) -> None:
         self._attr_native_value = self._attribute(self._device)
