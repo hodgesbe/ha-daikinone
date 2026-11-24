@@ -66,6 +66,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: DaikinOneConfigEntry) ->
         raise ConfigEntryAuthFailed(str(err)) from err
     except DaikinServiceException as err:
         raise ConfigEntryNotReady(str(err)) from err
+    if not data.daikin.get_thermostats():
+        raise ConfigEntryNotReady("Daikin returned no thermostats to set up")
     entry.runtime_data = data
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

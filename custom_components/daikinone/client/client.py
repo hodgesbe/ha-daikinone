@@ -55,12 +55,14 @@ class DaikinOne:
                 if not response.online and not response.data:
                     continue
                 thermostats[response.id] = map_thermostat(response)
-            except KeyError, ValueError, TypeError:
+            except AttributeError, KeyError, OverflowError, TypeError, ValueError:
                 skipped += 1
+        if skipped and not thermostats:
+            raise DaikinServiceException("Daikin returned no usable thermostat records")
         if skipped:
             log.warning("Skipped %s unsupported or incomplete Daikin device records", skipped)
         self.__thermostats = thermostats
-        log.debug("Cached %s online thermostats", len(thermostats))
+        log.debug("Cached %s thermostats", len(thermostats))
 
     def get_thermostat(self, thermostat_id: str) -> DaikinThermostat:
         return copy.deepcopy(self.__thermostats[thermostat_id])

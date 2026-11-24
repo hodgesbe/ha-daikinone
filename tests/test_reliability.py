@@ -8,7 +8,7 @@ import pytest
 
 from custom_components.daikinone.client.client import DaikinOne
 from custom_components.daikinone.client.models import DaikinThermostatMode, DaikinUserCredentials
-from tests.test_mapping import _make_device
+from tests.test_mapping import AIR_HANDLER_DATA, OUTDOOR_UNIT_DATA, _make_device
 
 
 @pytest.mark.asyncio
@@ -178,3 +178,52 @@ async def test_reauth_replaces_password_and_preserves_account(monkeypatch):
     assert await flow.async_step_reauth_confirm({"password": "new"}) == {"type": "abort"}
     check.assert_awaited_once_with("fixture@example.com", "new")
     reload_and_abort.assert_called_once_with(entry, data_updates={"password": "new"})
+
+
+@pytest.mark.parametrize(
+    "equipment",
+    [
+        {**AIR_HANDLER_DATA, "ctAHSerialNoCharacter1_15": None},
+        {**OUTDOOR_UNIT_DATA, "ctOutdoorCompressorRunTime": 10**30},
+    ],
+)
+async def test_invalid_equipment_value_does_not_block_other_thermostats(equipment):
+    client = DaikinOne(DaikinUserCredentials("fixture", "fixture"))
+    healthy = _make_device()
+    bad = {**_make_device(equipment), "id": "bad"}
+    client._transport.request = AsyncMock(return_value=[bad, healthy])
+
+    await client.update()
+
+    assert set(client.get_thermostats()) == {healthy["id"]}
+
+
+async def test_all_malformed_records_leave_previous_snapshot_intact():
+    from custom_components.daikinone.exceptions import DaikinServiceException
+
+    client = DaikinOne(DaikinUserCredentials("fixture", "fixture"))
+    healthy = _make_device()
+    client._transport.request = AsyncMock(side_effect=[[healthy], [{"id": "malformed"}]])
+
+    await client.update()
+    with pytest.raises(DaikinServiceException, match="no usable thermostat records"):
+        await client.update()
+    assert set(client.get_thermostats()) == {healthy["id"]}
+
+
+async def test_empty_startup_retries_instead_of_loading_empty_platforms(monkeypatch):
+    from homeassistant.exceptions import ConfigEntryNotReady
+
+    from custom_components.daikinone import async_setup_entry
+
+    client = DaikinOne(DaikinUserCredentials("fixture", "fixture"))
+    client._transport.request = AsyncMock(return_value=[])
+    monkeypatch.setattr("custom_components.daikinone.DaikinOne", lambda *_: client)
+    monkeypatch.setattr("custom_components.daikinone.async_get_clientsession", lambda _: None)
+    forward = AsyncMock()
+    hass = SimpleNamespace(config_entries=SimpleNamespace(async_forward_entry_setups=forward))
+    entry = SimpleNamespace(data={"email": "fixture", "password": "fixture"})
+
+    with pytest.raises(ConfigEntryNotReady, match="no thermostats"):
+        await async_setup_entry(hass, entry)
+    forward.assert_not_awaited()
